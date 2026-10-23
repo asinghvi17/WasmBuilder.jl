@@ -1,5 +1,14 @@
 using Test, WasmBuilder
+import NodeJS_24_jll
 const W = WasmBuilder
+
+# Node.js 24 (WasmGC, exnref exceptions), or the executable named by WASMBUILDER_NODE
+node_cmd() = haskey(ENV, "WASMBUILDER_NODE") ? `$(ENV["WASMBUILDER_NODE"])` : NodeJS_24_jll.node()
+
+# validation by wasm-tools, independent of WasmBuilder's own, when it is installed
+const HAS_WASM_TOOLS = W.wasm_tools() !== nothing
+HAS_WASM_TOOLS || @info "wasm-tools not found: modules are validated by WasmBuilder only"
+checkvalid(bytes) = HAS_WASM_TOOLS ? validate(bytes) : true
 
 function node_run(bytes, js)
     dir = mktempdir()
@@ -11,7 +20,7 @@ function node_run(bytes, js)
     """
     write(joinpath(dir, "run.js"), script)
     # exnref (`try_table`) is behind a flag in Node 24
-    return strip(read(`node --experimental-wasm-exnref $(joinpath(dir, "run.js"))`, String))
+    return strip(read(`$(node_cmd()) --experimental-wasm-exnref $(joinpath(dir, "run.js"))`, String))
 end
 
 @testset "WasmBuilder" begin
@@ -65,7 +74,7 @@ end
     add_export!(m, "sumfill", g)
 
     bytes = to_bytes(m)
-    @test validate(bytes)
+    @test checkvalid(bytes)
     @test node_run(bytes, "console.log(e.fact(20n).toString(), e.sumfill(1.5, 4))") == "2432902008176640000 6"
     @test occursin("struct.new", sprint(print_wat, m))
 
@@ -122,7 +131,7 @@ const exnref = RefType(:exn)
     end
     build(b -> emit!(b, :i64_const, typemax(UInt64)), m, "u64", ValType[], ValType[I64])
     bytes = to_bytes(m)
-    @test validate(bytes)
+    @test checkvalid(bytes)
     @test node_run(bytes, "console.log(e.u8(), e.big(), e.u32(), e.neg(), e.u64())") ==
           "255 -2147483648 -1 -1 -1n"
     enc(x) = (io = IOBuffer(); W.write_inst(io, Inst(:i32_const, x)); take!(io))
@@ -141,7 +150,7 @@ end
     @test length(f.body) == 1
     finish!(b)
     @test_throws WasmValidationError end!(b)
-    @test validate(to_bytes(m))
+    @test checkvalid(to_bytes(m))
 end
 
 @testset "br_table checks every target (bug 3)" begin
@@ -158,7 +167,7 @@ end
         emit!(b, :drop); emit!(b, :i64_const, 0)
         end!(b)
     end
-    @test validate(to_bytes(m))
+    @test checkvalid(to_bytes(m))
 end
 
 @testset "non-defaultable locals (bug 4)" begin
@@ -187,7 +196,7 @@ end
         emit!(b, :local_get, x); emit!(b, :local_tee, y); emit!(b, :drop)
         emit!(b, :local_get, y); emit!(b, :struct_get, s, 0)
     end
-    @test validate(to_bytes(m))
+    @test checkvalid(to_bytes(m))
 end
 
 @testset "unknown references in unreachable code (bug 5)" begin
@@ -197,7 +206,7 @@ end
     build(b -> (unreachable!(b); emit!(b, :any_convert_extern)), m, "f", ValType[],
           ValType[RefType(:any, false)])
     build(b -> (unreachable!(b); emit!(b, :ref_as_non_null); emit!(b, :drop)), m, "g")
-    @test validate(to_bytes(m))
+    @test checkvalid(to_bytes(m))
 end
 
 @testset "br_on_null checks its operand (bug 6)" begin
@@ -216,7 +225,7 @@ end
         if!(b, blocktype(b, ValType[RefType(:i31)], ValType[anyref]))
         end!(b)
     end
-    @test validate(to_bytes(m))
+    @test checkvalid(to_bytes(m))
     @test fails(m, ValType[I32]) do b
         emit!(b, :i32_const, 1); emit!(b, :local_get, 0)
         if!(b, blocktype(b, ValType[I32], ValType[I64]))
@@ -251,7 +260,7 @@ end
         end!(b)
     end
     bytes = to_bytes(m)
-    @test validate(bytes)
+    @test checkvalid(bytes)
     @test node_run(bytes, "console.log(e.catch(41))") == "42"
 end
 
@@ -264,7 +273,7 @@ end
         emit!(b, :ref_null, :noextern); emit!(b, :any_convert_extern); emit!(b, :drop)
         emit!(b, :ref_null, :none); emit!(b, :extern_convert_any); emit!(b, :drop)
     end
-    @test validate(to_bytes(m))
+    @test checkvalid(to_bytes(m))
 end
 
 @testset "array.new_default needs defaultable elements (bug 10)" begin
@@ -274,7 +283,7 @@ end
     nullable = add_type!(m, ArrayType(FieldType(RefType(s, true), true)))
     @test fails(b -> (emit!(b, :i32_const, 1); emit!(b, :array_new_default, nonnull)), m)
     build(b -> (emit!(b, :i32_const, 1); emit!(b, :array_new_default, nullable); emit!(b, :drop)), m, "f")
-    @test validate(to_bytes(m))
+    @test checkvalid(to_bytes(m))
 end
 
 @testset "array.copy compares storage types (bug 11)" begin
@@ -293,7 +302,7 @@ end
     @test fails(copy(a32, a8), m)
     @test fails(copy(a8, a32), m)
     build(copy(a8, c8), m, "f")
-    @test validate(to_bytes(m))
+    @test checkvalid(to_bytes(m))
 end
 
 @testset "array.init_data (bug 12)" begin
@@ -311,7 +320,7 @@ end
     @test fails(init(refs, 0), m)
     @test fails(init(mut8, 1), m)
     build(init(mut8, 0), m, "f")
-    @test validate(to_bytes(m))
+    @test checkvalid(to_bytes(m))
 end
 
 @testset "subtype declarations (bug 13)" begin
@@ -353,7 +362,7 @@ end
     asup = add_type!(m, ArrayType(FieldType(anyref, false)); final=false)
     add_type!(m, ArrayType(FieldType(RefType(:i31, false), false)); super=asup)
     @test verify(m) === nothing
-    @test validate(to_bytes(m))
+    @test checkvalid(to_bytes(m))
 end
 
 @testset "module validity (bug 14)" begin
@@ -389,7 +398,7 @@ end
     m.start = f
     @test verify(m) === nothing
     @test isempty(m.declared)
-    @test validate(to_bytes(m))
+    @test checkvalid(to_bytes(m))
 end
 
 @testset "imports keep their signatures (bug 15)" begin
@@ -403,7 +412,7 @@ end
         emit!(b, :f64_const, 1.5); call!(b, c)
     end
     bytes = to_bytes(m)
-    @test validate(bytes)
+    @test checkvalid(bytes)
     @test count(f -> f.imported !== nothing, m.funcs) == 2
 end
 
@@ -431,7 +440,7 @@ end
         emit!(b, :ref_null, :exn); emit!(b, :throw_ref)
     end
     bytes = to_bytes(m)
-    @test validate(bytes)
+    @test checkvalid(bytes)
     @test node_run(bytes, "console.log(e.rethrow(41))") == "42"
 end
 
@@ -487,7 +496,7 @@ end
         emit!(b, :local_get, 0); emit!(b, :ref_func, double); return_call_ref!(b, double.type)
     end
     bytes = to_bytes(m)
-    @test validate(bytes)
+    @test checkvalid(bytes)
     @test node_run(bytes, "console.log(e.cast(1), e.cast(0), e.cast_fail(1), e.cast_fail(0), " *
                           "e.non_null(1), e.non_null(0), e.tail(4), e.tail_ref(5))") ==
           "7 -1 7 -1 5 -2 8 10"
@@ -527,7 +536,7 @@ end
     end
     build(b -> (emit!(b, :ref_null, :exn); throw_ref!(b)), m, "h")
     build(b -> return_call!(b, f), m, "t")
-    @test validate(to_bytes(m))
+    @test checkvalid(to_bytes(m))
     wat = sprint(print_wat, m)
     for name in ["br_if 0", "br_table 0 0 0", "try_table (catch \$tag0 1) (catch_all_ref 0)",
                  "block (result (ref null exn))", "i32.add", "local.get 0", "struct.new_default 0",

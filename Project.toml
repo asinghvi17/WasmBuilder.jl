@@ -7,3 +7,10 @@ authors = ["Gabriel Baraldi <gabriel.baraldi@juliahub.com>"]
 
 [compat]
 julia = "1.10"
+
+[extras]
+NodeJS_24_jll = "30a2228f-09fe-513d-9563-0d10bd40449a"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["NodeJS_24_jll", "Test"]
