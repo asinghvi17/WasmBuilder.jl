@@ -41,10 +41,31 @@ function show_comp(io::IO, t::ArrayType)
     print(io, ")")
 end
 
-function show_imm(io::IO, @nospecialize(x))
-    if x isa Func
-        print(io, "\$", x.name)
-    elseif x isa Global
+function show_types(io::IO, ts)
+    print(io, "(result")
+    foreach(t -> (print(io, " "); show_valtype(io, t)), ts)
+    print(io, ")")
+end
+
+# an immediate of the kind `kind`, preceded by a space (block types are written as in the
+# text format, other indices as numbers)
+function show_imm(io::IO, kind::Symbol, @nospecialize(x))
+    (x === :empty || x === nothing) && return
+    print(io, " ")
+    if kind === :bt
+        x isa TypeRef ? print(io, "(type ", x.idx, ")") : show_types(io, (x,))
+    elseif kind === :valtypes
+        show_types(io, x)
+    elseif kind === :ref || kind === :refnull
+        show_valtype(io, RefType(x, kind === :refnull))
+    elseif kind === :labels
+        join(io, x, " ")
+    elseif kind === :catches
+        join(io, map(x) do (k, tag, label)
+            name = ("catch", "catch_ref", "catch_all", "catch_all_ref")[k+1]
+            k < 2 ? "($name \$tag$(tag.idx) $label)" : "($name $label)"
+        end, " ")
+    elseif x isa Func || x isa Global
         print(io, "\$", x.name)
     elseif x isa Tag
         print(io, "\$tag", x.idx)
@@ -52,27 +73,33 @@ function show_imm(io::IO, @nospecialize(x))
         print(io, x.idx)
     elseif x isa RefType || x isa NumType
         show_valtype(io, x)
-    elseif x === :empty
-    elseif x isa Symbol
-        print(io, x)
-    elseif x isa AbstractVector
-        join(io, map(string, x), " ")
     else
         print(io, x)
+    end
+end
+
+function show_inst(io::IO, i::Inst)
+    info = get(INSTRUCTIONS, i.op, nothing)
+    if info === nothing
+        print(io, i.op)
+        foreach(x -> show_imm(io, :unknown, x), i.imm)
+    elseif i.op in (:br_on_cast, :br_on_cast_fail)
+        flags, label, h1, h2 = i.imm
+        print(io, info.text, " ", label, " ")
+        show_valtype(io, RefType(h1, flags & 1 != 0))
+        print(io, " ")
+        show_valtype(io, RefType(h2, flags & 2 != 0))
+    else
+        print(io, info.text)
+        foreach((k, x) -> show_imm(io, k, x), info.imms, i.imm)
     end
 end
 
 function show_insts(io::IO, insts::Vector{Inst}, indent::Int)
     for i in insts
         i.op in (:end, :else) && (indent -= 1)
-        print(io, "  "^indent, replace(string(i.op), '_' => '.'; count=1))
-        name = string(i.op)
-        # instruction names have one '.' (`i32.add`, `struct.new_default`)
-        for x in i.imm
-            x === :empty && continue
-            print(io, " ")
-            show_imm(io, x)
-        end
+        print(io, "  "^indent)
+        show_inst(io, i)
         println(io)
         i.op in (:block, :loop, :if, :else, :try_table) && (indent += 1)
     end

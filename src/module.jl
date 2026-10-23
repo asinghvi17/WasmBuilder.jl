@@ -85,10 +85,11 @@ typedef(m::WModule, t::TypeRef) = m.types[t.idx+1]
 
 "The (deduplicated) function type with `params` and `results`."
 function functype!(m::WModule, params::Vector{ValType}, results::Vector{ValType})
-    key = (params, results)
-    get!(m.functypes, key) do
+    t = get(m.functypes, (params, results), nothing)
+    t === nothing || return t
+    # copies, so that the caller mutating its vectors does not change the key
+    return m.functypes[(copy(params), copy(results))] =
         add_type!(m, FuncType(copy(params), copy(results)))
-    end
 end
 
 "Declare a function of the module named `name`, with an empty body."
@@ -100,13 +101,18 @@ function add_func!(m::WModule, name::AbstractString, params::Vector{ValType},
     return f
 end
 
-"Import a function `mod.name` with `params` and `results`."
+"""
+Import a function `mod.name` with `params` and `results`. Importing the same name with
+the same signature again returns the same function; with another signature, a distinct
+import (a JavaScript host function can be imported at several types).
+"""
 function add_import!(m::WModule, mod::AbstractString, name::AbstractString,
                      params::Vector{ValType}, results::Vector{ValType})
+    type = functype!(m, params, results)
     for f in m.funcs
-        f.imported == (mod, name) && return f
+        f.imported == (mod, name) && f.type == type && return f
     end
-    f = Func(-1, String(name), functype!(m, params, results), params, results, ValType[],
+    f = Func(-1, String(name), type, params, results, ValType[],
              Inst[], (String(mod), String(name)))
     push!(m.funcs, f)
     return f

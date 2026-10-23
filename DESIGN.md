@@ -41,6 +41,8 @@ Instructions refer to functions, globals and tags by the objects themselves, not
 index. Function indices are assigned when the module is written (imports first, as the
 index space requires), so imports can be added at any time during code generation,
 including after calls to other functions were emitted. This avoids a relocation pass.
+`add_import!` deduplicates by name and signature: the same name imported at another
+signature is another import (a JavaScript function can be imported at several types).
 
 ## The builder
 
@@ -49,7 +51,9 @@ algorithm of the specification's appendix: an operand stack of value types (with
 unknown bottom type in unreachable code) and a stack of control frames (`block`, `loop`,
 `if`/`else`, `try_table`, the function). Each instruction pops its operand types
 (checking subtyping in the module) and pushes its result types; control instructions
-check their label types and arities.
+check their label types and arities. Non-defaultable locals (non-nullable references) must
+be set before they are read, with the spec's definite-initialization rule (a `local.set`
+counts until the end of its block). `end!` ends blocks; `finish!` ends the function.
 
 Errors are `WasmValidationError`s naming the function, the position of the instruction,
 the instruction and the operand stack: the code generator gets the error where it emits
@@ -58,16 +62,24 @@ the wrong instruction, with its own backtrace, instead of a byte offset from an 
 Validation can be switched off (`WasmBuilder.VALIDATE[] = false`) for speed once a
 generator is trusted; the operand stack is still tracked.
 
-Numeric instructions are typed from their names (`i64_trunc_sat_f64_s`: `f64 → i64`);
-the others have explicit rules.
+One table (`instructions.jl`) gives each instruction its opcode, immediate kinds, text
+name and, when its type is fixed, its signature: it drives the encoding, the printer and
+the validation of those instructions. Numeric signatures come from the names
+(`i64_trunc_sat_f64_s`: `f64 → i64`); the other instructions have explicit rules.
 
-Not covered yet: `br_on_cast`/`br_on_cast_fail` validation, tables and `call_indirect`,
-linear memory, SIMD, `return_call_ref`, element segments beyond the declarative one that
-`ref.func` needs (`declare!` adds functions to it), imported globals.
+What the builder cannot check instruction by instruction is checked by `verify(m)`: type
+definitions (supertypes defined earlier, not final, and matching), global initializers
+(constant expressions of the global's type, reading earlier immutable globals), tags,
+unique export names and the type of the start function. `to_bytes` calls it.
+
+Not covered yet: tables and `call_indirect`, linear memory, SIMD, element segments beyond
+the declarative one that `ref.func` needs (`declare!` adds functions to it), imported
+globals.
 
 ## Output
 
-- `to_bytes(m)`: the binary format; a `name` section names the functions.
+- `to_bytes(m; verify=true)`: the binary format, after `verify(m)`; a `name` section
+  names the functions.
 - `print_wat(io, m)`: the text format, approximately, for reading.
 - `validate(bytes)`: `wasm-tools validate --features=all`, when available.
 - `disassemble(bytes)`: `wasm-tools print`.

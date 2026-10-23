@@ -90,6 +90,7 @@ is_num(t) = t isa NumType
 # whether values of the type have a default value (zero or null), which locals need
 defaultable(t::NumType) = true
 defaultable(t::RefType) = t.nullable
+defaultable(t::PackedType) = true
 
 Base.show(io::IO, t::TypeRef) = print(io, "\$", t.idx)
 function Base.show(io::IO, t::RefType)
