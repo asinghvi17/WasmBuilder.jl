@@ -147,11 +147,11 @@ let
         :struct_get => (0x02, (:type, :u32)), :struct_get_s => (0x03, (:type, :u32)),
         :struct_get_u => (0x04, (:type, :u32)), :struct_set => (0x05, (:type, :u32)),
         :array_new => (0x06, (:type,)), :array_new_default => (0x07, (:type,)),
-        :array_new_fixed => (0x08, (:type, :u32)), :array_new_data => (0x09, (:type, :u32)),
+        :array_new_fixed => (0x08, (:type, :u32)), :array_new_data => (0x09, (:type, :dataidx)),
         :array_get => (0x0b, (:type,)), :array_get_s => (0x0c, (:type,)),
         :array_get_u => (0x0d, (:type,)), :array_set => (0x0e, (:type,)),
         :array_fill => (0x10, (:type,)),
-        :array_copy => (0x11, (:type, :type)), :array_init_data => (0x12, (:type, :u32)),
+        :array_copy => (0x11, (:type, :type)), :array_init_data => (0x12, (:type, :dataidx)),
         :ref_test => (0x14, (:ref,)), :ref_cast => (0x16, (:ref,)),
         :any_convert_extern => (0x1a, ()), :extern_convert_any => (0x1b, ())]
     for (op, (code, imms)) in gc
@@ -163,7 +163,4 @@ let
     definst!(:ref_i31, (0xfb, 0x1c); sig=fixedsig((I32,), (RefType(:i31, false),)))
     definst!(:i31_get_s, (0xfb, 0x1d); sig=fixedsig((RefType(:i31),), (I32,)))
     definst!(:i31_get_u, (0xfb, 0x1e); sig=fixedsig((RefType(:i31),), (I32,)))
-
 end
-
-include("memory_simd.jl")

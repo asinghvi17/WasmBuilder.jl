@@ -18,7 +18,7 @@ Check the validity of the module beyond its function bodies (validated by the
 [`Builder`](@ref) as they are emitted): type definitions and their declared supertypes,
 global initializers (constant expressions of the global's type, reading only earlier
 immutable globals), memory limits, active data offsets, tags, exports (unique names)
-and the start function (of type `[] -> []`). Recheck memory/SIMD immediates, memory
+and the start function (of type `[] -> []`). Recheck instruction immediates, memory
 availability and relaxed SIMD enablement in function bodies. Throws a
 [`WasmValidationError`](@ref); [`to_bytes`](@ref) calls it.
 """
@@ -44,21 +44,24 @@ function verify(m::WModule)
         item = "global $(g.name)"
         g.idx == i - 1 || merr(item, :global, "index $(g.idx) at position $(i-1)")
         valid_valtype(m, g.type) || merr(item, :global, "invalid type $(g.type)")
-        verify_const(m, item, g.init, g.type, i - 1)
+        if g.imported === nothing
+            verify_const(m, item, g.init, g.type, i - 1)
+        else
+            isempty(g.init) || merr(item, :global, "imported global has an initializer")
+        end
     end
     mem = m.memory
     mem === nothing || valid_limits(mem) || merr("memory", :memory, "invalid memory limits")
     for (i, d) in enumerate(m.datas)
         d.offset === nothing && continue
         mem === nothing && merr("data $(i-1)", :data, "active segment requires a memory")
-        verify_const(m, "data $(i-1)", d.offset, I32, 0)
+        verify_const(m, "data $(i-1)", d.offset, I32, length(m.globals))
     end
     for f in m.funcs
         f.imported === nothing || continue
         for (pos, inst) in enumerate(f.body)
             info = get(INSTRUCTIONS, inst.op, nothing)
-            if info !== nothing && (info.code[1] == 0xfd ||
-                    any(k -> k in (:memarg, :memidx, :dataidx), info.imms))
+            if info !== nothing
                 check_imms(m, info, inst.imm) do msg
                     throw(WasmValidationError(f.name, pos, inst.op, msg, Any[]))
                 end
@@ -71,7 +74,7 @@ function verify(m::WModule)
         name in names && merr(where, :export, "duplicate export name")
         push!(names, name)
         item isa Func && item in funcs || item isa Global && item in globals ||
-            item isa Tag && item in tags || item isa Memory && item === m.memory ||
+            item isa Tag && item in tags || item isa WMemory && item === m.memory ||
             merr(where, :export, "not a function, global, tag or memory of the module")
     end
     s = m.start

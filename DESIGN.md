@@ -18,7 +18,7 @@ Binaryen's `wasm-opt` for optimization (a code generator's choice).
 | `WModule` | the module under construction: types, functions, globals, tags, memory, data, exports, start |
 | `SubType`, `FuncType`, `StructType`, `ArrayType`, `FieldType` | type definitions |
 | `NumType`, `RefType`, `PackedType`, `TypeRef` | value, reference, packed storage types; a defined type by index |
-| `Func`, `Global`, `Tag`, `Memory`, `DataSegment` | module items; function indices are assigned when written |
+| `Func`, `Global`, `Tag`, `WMemory`, `DataSegment` | module items; function indices are assigned when written |
 | `Inst` | an instruction: name (text format with `_`) and immediates (items, not indices) |
 | `Builder` | appends validated instructions to a function body |
 
@@ -72,32 +72,36 @@ What the builder cannot check instruction by instruction is checked by `verify(m
 definitions (supertypes defined earlier, not final, and matching), global initializers
 (constant expressions of the global's type, reading earlier immutable globals), tags,
 unique export names and the type of the start function. It also validates memory limits,
-active data offsets, memory availability, and memory/SIMD immediates and feature flags
-in function bodies, including bodies assembled directly from `Inst`s. Operand/control
+active data offsets, memory availability, instruction immediates and memory/SIMD
+feature flags in function bodies, including bodies assembled directly from `Inst`s. Operand/control
 stack validation remains the builder's responsibility. `to_bytes` calls `verify`.
 
 Not covered yet: tables and `call_indirect`, multi-memory, memory64, shared memory and
-atomics, element segments beyond the declarative one that `ref.func` needs (`declare!` adds functions to it),
-imported globals.
+atomics, element segments beyond the declarative one that `ref.func` needs (`declare!` adds functions to it).
 
 ### Linear memory and vector instructions
 
-`m.memory` is either absent or one `Memory`, defined or imported, with limits in 64 KiB
+`m.memory` is either absent or one `WMemory`, defined or imported, with limits in 64 KiB
 pages (`0 ≤ min ≤ max ≤ 65536`). The memory index is always zero; addresses and lengths
 are `i32`. A second memory is rejected. Memory imports share the import section with
-function imports; only defined memory appears in the memory section.
+function and global imports; only defined memory appears in the memory section.
 
 `add_data!(m, bytes)` adds a passive `DataSegment`. Its `offset` keyword makes the
 segment active in memory zero, taking an integer or an `i32` constant expression.
+Offsets can read immutable globals, including imports added with
+`add_import!(m, "env", "offset", I32)`. Global imports precede definitions in the
+global index space; adding an import updates the indices of existing globals.
 Segment indices remain stable across active and passive segments. The data-count
 section precedes code, and the data section follows it. Both GC array data instructions
 and bulk memory instructions refer to these indices.
 
-Memory instructions take `(alignment_exponent, byte_offset)` memargs. `OpInfo` holds
+Memory instructions take `MemArg(alignment_exponent, byte_offset)` memargs. `OpInfo` holds
 the maximum alignment exponent and lane count for each applicable instruction, so
 validation uses the access width, including splat, extending and lane loads. Shuffle
-masks contain 16 selectors below 32. Vector constants contain exactly 128 bits and are
-encoded in little-endian byte order. The `0xfd` opcode suffix uses unsigned LEB128,
+masks are vectors of 16 integer selectors in `0:31`. Vector constants accept a
+`UInt128` or a vector of 16 integer bytes in `-128:255`; both vectors exclude `Bool`.
+The dedicated memarg type and vector payloads each occupy one `Inst` immediate.
+Vector constants contain exactly 128 bits and are encoded in little-endian byte order. The `0xfd` opcode suffix uses unsigned LEB128,
 including opcodes above `0x7f` and relaxed opcodes `0x100:0x113`.
 
 `WModule(relaxed_simd=true)` enables all 20 relaxed instructions; the default is false.

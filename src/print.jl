@@ -66,13 +66,12 @@ function show_imm(io::IO, kind::Symbol, @nospecialize(x))
             k < 2 ? "($name \$tag$(tag.idx) $label)" : "($name $label)"
         end, " ")
     elseif kind === :memarg
-        x[2] == 0 || print(io, "offset=", x[2], " ")
-        print(io, "align=", 1 << x[1])
+        show_memarg(io, x)
     elseif kind === :v128
-        bytes = x isa UInt128 ? reinterpret(UInt8, [htol(x)]) : collect(x)
+        bytes = simd_bytes(x)
         print(io, "i8x16 ", join(Int.(bytes), " "))
     elseif kind === :lanes16
-        join(io, x, " ")
+        join(io, simd_bytes(x), " ")
     elseif x isa Func || x isa Global
         print(io, "\$", x.name)
     elseif x isa Tag
@@ -86,11 +85,19 @@ function show_imm(io::IO, kind::Symbol, @nospecialize(x))
     end
 end
 
+function show_memarg(io::IO, x::MemArg)
+    x.offset == 0 || print(io, "offset=", x.offset, " ")
+    print(io, "align=", 1 << x.align)
+end
+
 function show_inst(io::IO, i::Inst)
     info = get(INSTRUCTIONS, i.op, nothing)
     if info === nothing
         print(io, i.op)
         foreach(x -> show_imm(io, :unknown, x), i.imm)
+    elseif i.op === :memory_init
+        dataidx, memidx = i.imm
+        print(io, info.text, " ", memidx, " ", dataidx)
     elseif i.op in (:br_on_cast, :br_on_cast_fail)
         flags, label, h1, h2 = i.imm
         print(io, info.text, " ", label, " ")
@@ -130,7 +137,10 @@ function print_wat(io::IO, m::WModule)
     end
     println(io, "  )")
     for g in m.globals
-        print(io, "  (global \$", g.name, " ", g.mutable ? "(mut " : "")
+        print(io, "  (global \$", g.name, " ")
+        g.imported === nothing || print(io, "(import ", wat_string(g.imported[1]),
+                                         " ", wat_string(g.imported[2]), ") ")
+        print(io, g.mutable ? "(mut " : "")
         show_valtype(io, g.type)
         println(io, g.mutable ? ")" : "")
         show_insts(io, g.init, 2)
@@ -179,7 +189,7 @@ function print_wat(io::IO, m::WModule)
         println(io, wat_string(d.bytes), ")")
     end
     for (name, item) in m.exports
-        item isa Memory && (println(io, "  (export \"", name, "\" (memory 0))"); continue)
+        item isa WMemory && (println(io, "  (export \"", name, "\" (memory 0))"); continue)
         println(io, "  (export \"", name, "\" ", item isa Func ? "(func \$" : item isa Global ? "(global \$" : "(tag ",
                 item isa Tag ? item.idx : item.name, "))")
     end

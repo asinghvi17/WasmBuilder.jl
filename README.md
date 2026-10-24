@@ -70,30 +70,33 @@ f = add_func!(m, "scale_pair", ValType[I32, F64], ValType[])
 b = Builder(m, f)
 emit!(b, :local_get, 0)               # destination address
 emit!(b, :local_get, 0)
-emit!(b, :v128_load, (3, 0))          # (log2 alignment, byte offset)
+emit!(b, :v128_load, MemArg(3, 0))    # log2 alignment, byte offset
 emit!(b, :local_get, 1)
 emit!(b, :f64x2_splat)
 emit!(b, :f64x2_mul)
-emit!(b, :v128_store, (3, 0))
+emit!(b, :v128_store, MemArg(3, 0))
 finish!(b)
 add_export!(m, "scale_pair", f)
 bytes = to_bytes(m)
 ```
 
 A module has at most one 32-bit, unshared memory. Import it with
-`add_import!(m, "env", "memory", WasmBuilder.Memory(1, 4))` in place of `add_memory!`.
+`add_import!(m, "env", "memory", WMemory(1, 4))` in place of `add_memory!`.
 Memory indices are explicit zero immediates: `emit!(b, :memory_size, 0)`,
 `emit!(b, :memory_copy, 0, 0)`, or `emit!(b, :memory_init, data_index, 0)`.
 `add_data!` returns a zero-based index; `emit!(b, :data_drop, data_index)` drops it.
-Active offsets can also be constant-expression `Vector{Inst}` values.
+Active offsets can also be constant-expression `Vector{Inst}` values, including
+`Inst[Inst(:global_get, add_import!(m, "env", "offset", I32))]` for an immutable
+imported global.
 
 SIMD names use underscores in Julia (`:i16x8_extract_lane_s`) and the specification's
 names in text (`i16x8.extract_lane_s`). Lane indices are zero-based. `v128.const` takes
-a `UInt128` bit pattern (encoded little-endian) or 16 integer bytes; `i8x16.shuffle`
-takes 16 integer lane selectors in `0:31`. A memarg's alignment exponent must be at most
+a `UInt128` bit pattern (encoded little-endian) or a vector of 16 integer bytes in
+`-128:255`; `i8x16.shuffle` takes a vector of 16 integer lane selectors in `0:31`.
+A memarg's alignment exponent must be at most
 the instruction's natural alignment, including narrow and lane loads/stores.
-When constructing `Inst` directly, wrap tuple-valued immediates in the immediate list:
-`Inst(:v128_load, ((3, 0),))`; `emit!` takes the memarg directly as above.
+Memargs use `MemArg(alignment_exponent, byte_offset)` in both `emit!` and `Inst`:
+`Inst(:v128_load, MemArg(3, 0))`. Byte vectors and shuffle masks exclude `Bool` values.
 
 Relaxed SIMD is enabled per module with `WModule(relaxed_simd=true)`. Its instructions
 may produce host-dependent results and require engine support. The builder and
@@ -113,7 +116,7 @@ can coexist with GC values, including `v128` struct fields and globals.
   and control frames, as the specification's validation algorithm does, including
   initialization of non-defaultable locals. `verify(m)` checks the rest: type definitions,
   constant expressions of globals and data offsets, memory limits, tags, exports, the
-  start function. It also rechecks memory/SIMD immediates and feature requirements.
+  start function. It also rechecks instruction immediates and feature requirements.
 
 See [DESIGN.md](DESIGN.md) for details, and what is not covered yet (tables and
 `call_indirect`, multi-memory, memory64, shared memory/atomics).

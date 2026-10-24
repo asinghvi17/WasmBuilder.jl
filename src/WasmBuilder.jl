@@ -9,7 +9,7 @@ module WasmBuilder
 
 export NumType, I32, I64, F32, F64, V128, PackedType, I8, I16, TypeRef, RefType, ValType,
        FieldType, FuncType, StructType, ArrayType, SubType, HeapType,
-       Inst, Func, Global, Tag, WModule, Memory, DataSegment, add_memory!,
+       Inst, Func, Global, Tag, WModule, WMemory, MemArg, DataSegment, add_memory!,
        add_type!, typedef, functype!, add_func!, add_import!, add_global!, add_tag!,
        add_data!, add_export!, add_local!, local_type, to_bytes,
        Builder, emit!, block!, loop!, if!, else!, end!, finish!, br!, br_if!, br_table!,
@@ -22,6 +22,7 @@ include("types.jl")
 include("module.jl")
 include("subtyping.jl")
 include("instructions.jl")
+include("memory_simd.jl")
 include("builder.jl")
 include("verify.jl")
 include("encode.jl")

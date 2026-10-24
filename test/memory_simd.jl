@@ -24,21 +24,21 @@ encode_inst(op, imms...) = (io = IOBuffer(); W.write_inst(io, Inst(op, imms)); t
 
 @testset "Memory and SIMD binary immediates" begin
     cases = [
-        (:i32_load, ((2, 128),), [0x28, 0x02, 0x80, 0x01]),
-        (:i64_load8_s, ((0, 3),), [0x30, 0x00, 0x03]),
-        (:i64_load32_u, ((2, 0),), [0x35, 0x02, 0x00]),
-        (:f32_store, ((2, 0),), [0x38, 0x02, 0x00]),
-        (:i64_store16, ((1, 0),), [0x3d, 0x01, 0x00]),
+        (:i32_load, (MemArg(2, 128),), [0x28, 0x02, 0x80, 0x01]),
+        (:i64_load8_s, (MemArg(0, 3),), [0x30, 0x00, 0x03]),
+        (:i64_load32_u, (MemArg(2, 0),), [0x35, 0x02, 0x00]),
+        (:f32_store, (MemArg(2, 0),), [0x38, 0x02, 0x00]),
+        (:i64_store16, (MemArg(1, 0),), [0x3d, 0x01, 0x00]),
         (:memory_size, (0,), [0x3f, 0x00]),
         (:memory_grow, (0,), [0x40, 0x00]),
         (:memory_init, (129, 0), [0xfc, 0x08, 0x81, 0x01, 0x00]),
         (:data_drop, (128,), [0xfc, 0x09, 0x80, 0x01]),
         (:memory_copy, (0, 0), [0xfc, 0x0a, 0x00, 0x00]),
         (:memory_fill, (0,), [0xfc, 0x0b, 0x00]),
-        (:v128_load, ((4, 0),), [0xfd, 0x00, 0x04, 0x00]),
-        (:v128_load16x4_s, ((3, 0),), [0xfd, 0x03, 0x03, 0x00]),
-        (:v128_load8_splat, ((0, 0),), [0xfd, 0x07, 0x00, 0x00]),
-        (:v128_store, ((4, 0),), [0xfd, 0x0b, 0x04, 0x00]),
+        (:v128_load, (MemArg(4, 0),), [0xfd, 0x00, 0x04, 0x00]),
+        (:v128_load16x4_s, (MemArg(3, 0),), [0xfd, 0x03, 0x03, 0x00]),
+        (:v128_load8_splat, (MemArg(0, 0),), [0xfd, 0x07, 0x00, 0x00]),
+        (:v128_store, (MemArg(4, 0),), [0xfd, 0x0b, 0x04, 0x00]),
         (:i8x16_swizzle, (), [0xfd, 0x0e]),
         (:i16x8_splat, (), [0xfd, 0x10]),
         (:i8x16_extract_lane_u, (15,), [0xfd, 0x16, 0x0f]),
@@ -49,9 +49,9 @@ encode_inst(op, imms...) = (io = IOBuffer(); W.write_inst(io, Inst(op, imms)); t
         (:v128_andnot, (), [0xfd, 0x4f]),
         (:v128_bitselect, (), [0xfd, 0x52]),
         (:v128_any_true, (), [0xfd, 0x53]),
-        (:v128_load16_lane, ((1, 300), 7), [0xfd, 0x55, 0x01, 0xac, 0x02, 0x07]),
-        (:v128_store64_lane, ((3, 0), 1), [0xfd, 0x5b, 0x03, 0x00, 0x01]),
-        (:v128_load32_zero, ((2, 0),), [0xfd, 0x5c, 0x02, 0x00]),
+        (:v128_load16_lane, (MemArg(1, 300), 7), [0xfd, 0x55, 0x01, 0xac, 0x02, 0x07]),
+        (:v128_store64_lane, (MemArg(3, 0), 1), [0xfd, 0x5b, 0x03, 0x00, 0x01]),
+        (:v128_load32_zero, (MemArg(2, 0),), [0xfd, 0x5c, 0x02, 0x00]),
         (:f32x4_demote_f64x2_zero, (), [0xfd, 0x5e]),
         (:i8x16_popcnt, (), [0xfd, 0x62]),
         (:i8x16_narrow_i16x8_s, (), [0xfd, 0x65]),
@@ -93,27 +93,33 @@ encode_inst(op, imms...) = (io = IOBuffer(); W.write_inst(io, Inst(op, imms)); t
     end
     bytes = UInt8.(0:15)
     bits = UInt128(0x0f0e0d0c0b0a09080706050403020100)
+    @test Inst(:v128_load, MemArg(3, 0)).imm == (MemArg(3, 0),)
+    @test Inst(:v128_const, bytes).imm == (bytes,)
+    @test Inst(:i8x16_shuffle, bytes).imm == (bytes,)
+    @test sprint(W.show_inst, Inst(:memory_init, 129, 0)) == "memory.init 0 129"
+    @test sprint(W.show_inst, Inst(:v128_const, fill(-128, 16))) ==
+        "v128.const i8x16 " * join(fill(128, 16), " ")
     @test encode_inst(:v128_const, bits) == [0xfd, 0x0c, bytes...]
-    @test encode_inst(:v128_const, Tuple(bytes)) == [0xfd, 0x0c, bytes...]
+    @test encode_inst(:v128_const, Int8.(-16:-1)) == [0xfd, 0x0c, UInt8.(240:255)...]
     @test encode_inst(:v128_const, bytes) == [0xfd, 0x0c, bytes...]
     @test encode_inst(:i8x16_shuffle, 16:31) == [0xfd, 0x0d, UInt8.(16:31)...]
     @test sprint(W.show_inst, Inst(:v128_const, bits)) == "v128.const i8x16 " * join(0:15, " ")
-    @test sprint(W.show_inst, Inst(:v128_load32_lane, (2, 16), 3)) ==
+    @test sprint(W.show_inst, Inst(:v128_load32_lane, MemArg(2, 16), 3)) ==
         "v128.load32_lane offset=16 align=4 3"
     @test sprint(W.show_inst, Inst(:i8x16_shuffle, 16:31)) == "i8x16.shuffle " * join(16:31, " ")
 end
 
 function memory_imms(info; alignment=info.alignment, lane=info.lanes)
-    Tuple(k === :memarg ? (alignment, 0) : k === :lane ? lane - 1 :
-          k === :v128 ? UInt128(0) : k === :lanes16 ? Tuple(0:15) : 0 for k in info.imms)
+    Tuple(k === :memarg ? MemArg(alignment, 0) : k === :lane ? lane - 1 :
+          k === :v128 ? UInt128(0) : k === :lanes16 ? collect(0:15) : 0 for k in info.imms)
 end
 
 @testset "Complete SIMD table and validation boundaries" begin
     m = WModule(relaxed_simd=true)
     add_memory!(m, 1)
     add_data!(m, UInt8[])
-    ops = filter(p -> p.second.code[1] == 0xfd ||
-                 any(k -> k in (:memarg, :memidx, :dataidx), p.second.imms), collect(W.INSTRUCTIONS))
+    ops = filter(p -> p.second.sig !== nothing && (p.second.code[1] == 0xfd ||
+                 any(k -> k in (:memarg, :memidx, :dataidx), p.second.imms)), collect(W.INSTRUCTIONS))
     @test count(p -> p.second.code[1] == 0xfd && !p.second.relaxed, ops) == 236
     @test count(p -> p.second.relaxed, ops) == 20
     @test length(unique(p.second.code for p in ops)) == length(ops)
@@ -141,11 +147,11 @@ end
         end
         if info.alignment !== nothing
             for align in (-1, info.alignment + 1, 32, 1.0)
-                bad = Tuple(k === :memarg ? (align, 0) : x for (k, x) in zip(info.imms, imms))
+                bad = Tuple(k === :memarg ? (align isa Integer ? MemArg(align, 0) : (align, 0)) : x for (k, x) in zip(info.imms, imms))
                 @test fails(b -> (unreachable!(b); emit!(b, op, bad...)), m)
             end
             for offset in (-1, UInt64(1) << 32, 0.0)
-                bad = Tuple(k === :memarg ? (0, offset) : x for (k, x) in zip(info.imms, imms))
+                bad = Tuple(k === :memarg ? (offset isa Integer ? MemArg(0, offset) : (0, offset)) : x for (k, x) in zip(info.imms, imms))
                 @test fails(b -> (unreachable!(b); emit!(b, op, bad...)), m)
             end
             build(m, "unaligned_$(op)", params, results; export_=false) do b
@@ -205,11 +211,13 @@ end
             @test validate(read(output))
             @test Dict(wasm_sections(read(output)))[10] == Dict(wasm_sections(bytes))[10]
         end
+    else
+        @info "wasm-tools not found: independent SIMD table disassembly and WAT round-trip checks skipped"
     end
 
     for op in (:v128_const, :i8x16_shuffle)
-        for value in (nothing, 0, "0123456789abcdef", zeros(16), [0 for _ in 1:15],
-                      [fill(0, 15); -1], [fill(0, 15); op === :v128_const ? 256 : 32])
+        for value in (nothing, 0, "0123456789abcdef", zeros(16), fill(false, 16), Tuple(0:15), [0 for _ in 1:15],
+                      [fill(0, 15); op === :v128_const ? -129 : -1], [fill(0, 15); op === :v128_const ? 256 : 32])
             @test fails(b -> (unreachable!(b); emit!(b, op, value)), m)
         end
     end
@@ -225,6 +233,8 @@ end
     @test fails(b -> (unreachable!(b); emit!(b, :v128_load, (0,))), m)
     @test fails(b -> (unreachable!(b); emit!(b, :v128_load, [0, 0])), m)
 
+    @test fails(b -> (unreachable!(b); emit!(b, :v128_load, (3, 0))), m)
+
     mutable_mask = collect(0:15)
     changed = WModule()
     build(changed, "shuffle", ValType[V128, V128], ValType[V128]) do b
@@ -234,8 +244,8 @@ end
     mutable_mask[1] = 32
     @test_throws WasmValidationError verify(changed)
 
-    for inst in (Inst(:f64x2_extract_lane, 2), Inst(:i32_load8_u, ((1, 0),)),
-                 Inst(:v128_load64_lane, (4, 0), 0), Inst(:i8x16_shuffle, fill(32, 16)))
+    for inst in (Inst(:f64x2_extract_lane, 2), Inst(:i32_load8_u, (MemArg(1, 0),)),
+                 Inst(:v128_load64_lane, MemArg(4, 0), 0), Inst(:i8x16_shuffle, fill(32, 16)))
         bad = WModule()
         add_memory!(bad, 1)
         f = add_func!(bad, "raw", ValType[], ValType[])
@@ -258,11 +268,11 @@ end
     m = WModule()
     mem = add_memory!(m, 1, 2)
     @test_throws ArgumentError add_memory!(m, 1)
-    @test_throws ArgumentError add_import!(m, "env", "mem", W.Memory(1))
+    @test_throws ArgumentError add_import!(m, "env", "mem", WMemory(1))
     mem.max = 0
     @test_throws WasmValidationError verify(m)
     mem.max = 2
-    add_export!(m, "foreign", W.Memory(1, 2))
+    add_export!(m, "foreign", WMemory(1, 2))
     @test_throws WasmValidationError verify(m)
 
     m = WModule()
@@ -278,16 +288,21 @@ end
     @test findfirst(==(12), ids) < findfirst(==(10), ids) < findfirst(==(11), ids)
     @test occursin("(data (offset (i32.const 4)) \"\\aa\\bb\")", sprint(print_wat, m))
     @test occursin("(data \"\\cc\")", sprint(print_wat, m))
+    @test occursin("(memory 1)", sprint(print_wat, m))
+    @test occursin("(export \"mem\" (memory 0))", sprint(print_wat, m))
     @test node_run(to_bytes(m), "console.log([...new Uint8Array(e.mem.buffer, 4, 2)].join(','))") == "170,187"
 
     m = WModule()
-    mem = add_import!(m, "env", "mem", W.Memory(1, 2))
+    mem = WMemory(1, 2)
+    @test add_import!(m, "env", "mem", mem) === mem
     add_export!(m, "mem", mem)
     add_data!(m, UInt8[0x80]; offset=3)
-    build(b -> (emit!(b, :i32_const, 3); emit!(b, :i32_load8_s, (0, 0))), m, "load",
+    build(b -> (emit!(b, :i32_const, 3); emit!(b, :i32_load8_s, MemArg(0, 0))), m, "load",
           ValType[], ValType[I32])
     host = add_import!(m, "env", "identity", ValType[I32], ValType[I32])
     build(b -> (emit!(b, :i32_const, 42); call!(b, host)), m, "call_host", ValType[], ValType[I32])
+    @test occursin("(memory (import \"\\65\\6e\\76\" \"\\6d\\65\\6d\") 1 2)", sprint(print_wat, m))
+    @test occursin("(export \"mem\" (memory 0))", sprint(print_wat, m))
     bytes = to_bytes(m)
     sections = Dict(wasm_sections(bytes))
     @test !haskey(sections, 5)
@@ -317,11 +332,13 @@ end
 @testset "Linear memory execution" begin
     m = WModule()
     add_export!(m, "mem", add_memory!(m, 1, 2))
+    add_data!(m, UInt8[0x55])
     d = add_data!(m, UInt8[0x80, 0xff, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff])
     build(m, "init") do b
         emit!(b, :i32_const, 0); emit!(b, :i32_const, 0); emit!(b, :i32_const, 8)
         emit!(b, :memory_init, d, 0)
     end
+    @test occursin("memory.init 0 1", sprint(print_wat, m))
     build(b -> emit!(b, :data_drop, d), m, "drop_data")
     build(m, "copy", ValType[I32, I32, I32]) do b
         for i in 0:2; emit!(b, :local_get, i); end
@@ -338,7 +355,7 @@ end
         params, results = info.sig
         build(m, string(op), params, results) do b
             for i in 0:length(params)-1; emit!(b, :local_get, i); end
-            emit!(b, op, (0, 0))
+            emit!(b, op, MemArg(0, 0))
         end
     end
     @test node_run(to_bytes(m), """
@@ -386,15 +403,15 @@ end
             block!(b); loop!(b)
             emit!(b, :local_get, i); emit!(b, :local_get, 3); emit!(b, :i32_ge_u); br_if!(b, 1)
             emit!(b, :local_get, 0); emit!(b, :local_get, i); emit!(b, :i32_const, 3); emit!(b, :i32_shl)
-            emit!(b, :i32_add); emit!(b, :v128_load, (3, 0))
+            emit!(b, :i32_add); emit!(b, :v128_load, MemArg(3, 0))
             emit!(b, :local_get, 4); emit!(b, :f64x2_splat)
             relaxed || emit!(b, :f64x2_mul)
             emit!(b, :local_get, 1); emit!(b, :local_get, i); emit!(b, :i32_const, 3); emit!(b, :i32_shl)
-            emit!(b, :i32_add); emit!(b, :v128_load, (3, 0))
+            emit!(b, :i32_add); emit!(b, :v128_load, MemArg(3, 0))
             emit!(b, relaxed ? :f64x2_relaxed_madd : :f64x2_add)
             emit!(b, :struct_new, pair); emit!(b, :struct_get, pair, 0); emit!(b, :local_set, vec)
             emit!(b, :local_get, 2); emit!(b, :local_get, i); emit!(b, :i32_const, 3); emit!(b, :i32_shl)
-            emit!(b, :i32_add); emit!(b, :local_get, vec); emit!(b, :v128_store, (3, 0))
+            emit!(b, :i32_add); emit!(b, :local_get, vec); emit!(b, :v128_store, MemArg(3, 0))
             for lane in 0:1
                 emit!(b, :local_get, gc); emit!(b, :local_get, i); emit!(b, :i32_const, lane); emit!(b, :i32_add)
                 emit!(b, :local_get, vec); emit!(b, :f64x2_extract_lane, lane); emit!(b, :array_set, array)
@@ -418,5 +435,58 @@ end
             console.log([sum, ...a.slice(33,41)].join(','));
         """)
         @test parse.(Float64, split(actual, ',')) == [sum(expected); expected]
+    end
+end
+
+@testset "Global data offsets and raw immediate validation" begin
+    m = WModule()
+    add_export!(m, "mem", add_memory!(m, WMemory(1)))
+    defined = add_global!(m, "defined", I32, false, Inst[Inst(:i32_const, 12)])
+    offset = add_import!(m, "env", "offset", I32)
+    @test offset === m.globals[1]
+    @test offset.idx == 0 && defined.idx == 1
+    add_export!(m, "offset", offset)
+    add_export!(m, "defined", defined)
+    add_data!(m, UInt8[0xab, 0xcd]; offset=Inst[Inst(:global_get, offset)])
+    @test verify(m) === nothing
+    @test occursin("(offset (global.get \$offset))", sprint(print_wat, m))
+    bytes = to_bytes(m)
+    @test checkvalid(bytes)
+    @test node_run(bytes, """
+        const assert = require('assert');
+        assert.deepEqual([...new Uint8Array(e.mem.buffer, 7, 2)], [171, 205]);
+        assert.equal(e.offset.value, 7); assert.equal(e.defined.value, 12);
+        console.log('ok');
+    """; imports="{env: {offset: new WebAssembly.Global({value:'i32', mutable:false}, 7)}}") == "ok"
+    offset.mutable = true
+    @test_throws WasmValidationError verify(m)
+    offset.mutable = false
+    offset.type = I64
+    @test_throws WasmValidationError verify(m)
+    offset.type = I32
+    push!(offset.init, Inst(:i32_const, 0))
+    @test_throws WasmValidationError verify(m)
+    empty!(offset.init)
+    m.datas[1] = DataSegment(UInt8[1], Inst[Inst(:global_get, defined)])
+    @test verify(m) === nothing
+    foreign = add_global!(WModule(), "foreign", I32, false, Inst[Inst(:i32_const, 0)])
+    m.datas[1] = DataSegment(UInt8[1], Inst[Inst(:global_get, foreign)])
+    @test_throws WasmValidationError verify(m)
+
+    for inst in (Inst(:i32_const, 1 << 40), Inst(:i64_const, "bad"),
+                 Inst(:i32_add, 0), Inst(:local_get, -1), Inst(:block, :empty, 0),
+                 Inst(:v128_const, Tuple(0:15)), Inst(:i8x16_shuffle, Tuple(0:15)))
+        m = WModule()
+        f = add_func!(m, "raw", ValType[], ValType[])
+        push!(f.body, inst)
+        @test_throws WasmValidationError verify(m)
+    end
+    for op in (:array_new_data, :array_init_data)
+        m = WModule()
+        t = add_type!(m, ArrayType(FieldType(I8, true)))
+        @test W.INSTRUCTIONS[op].imms == (:type, :dataidx)
+        f = add_func!(m, "raw", ValType[], ValType[])
+        push!(f.body, Inst(op, t, 0))
+        @test_throws WasmValidationError verify(m)
     end
 end

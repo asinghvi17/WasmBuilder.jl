@@ -549,5 +549,4 @@ end
     end
 end
 
-
 include("memory_simd.jl")

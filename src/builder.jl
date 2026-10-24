@@ -523,8 +523,12 @@ function check_field_read(b, op, f::FieldType)
     end
 end
 
-byte_sequence(x, limit) = x isa Union{Tuple,AbstractVector} && length(x) == 16 &&
-    all(l -> l isa Integer && 0 <= l < limit, x)
+byte_sequence(x, lo, hi) = false
+byte_sequence(x::AbstractVector, lo, hi) = length(x) == 16 &&
+    all(l -> l isa Integer && !(l isa Bool) && lo <= l <= hi, x)
+
+memarg_ok(x) = false
+memarg_ok(x::MemArg) = x.align >= 0 && 0 <= x.offset <= typemax(UInt32)
 
 function imm_ok(m::WModule, kind::Symbol, @nospecialize(x))
     kind === :u32 && return x isa Integer && 0 <= x <= typemax(UInt32)
@@ -536,12 +540,11 @@ function imm_ok(m::WModule, kind::Symbol, @nospecialize(x))
     kind === :func && return x isa Func
     kind === :global && return x isa Global
     kind === :valtypes && return x isa AbstractVector && all(t -> valid_valtype(m, t), x)
-    kind === :memarg && return x isa Tuple{Integer,Integer} && 0 <= x[1] <= 4 &&
-                               0 <= x[2] <= typemax(UInt32)
+    kind === :memarg && return memarg_ok(x)
     kind === :memidx && return x isa Integer && x == 0
     kind === :lane && return x isa Integer && 0 <= x < 16
-    kind === :v128 && return x isa UInt128 || byte_sequence(x, 256)
-    kind === :lanes16 && return byte_sequence(x, 32)
+    kind === :v128 && return x isa UInt128 || byte_sequence(x, -128, 255)
+    kind === :lanes16 && return byte_sequence(x, 0, 31)
     kind === :dataidx && return x isa Integer && 0 <= x < length(m.datas)
     return true
 end
@@ -558,8 +561,8 @@ function check_imms(fail, m::WModule, info::OpInfo, imms)
     end
     for (k, x) in zip(info.imms, imms)
         imm_ok(m, k, x) || fail("invalid immediate of kind $k: $(typeof(x)) $(x isa Union{Number,Symbol,TypeRef} ? x : "")")
-        k === :memarg && x[1] > info.alignment &&
-            fail("alignment exponent $(x[1]) exceeds $(info.alignment)")
+        k === :memarg && x.align > info.alignment &&
+            fail("alignment exponent $(x.align) exceeds $(info.alignment)")
         k === :lane && x >= info.lanes &&
             fail("lane $x must be less than $(info.lanes)")
     end

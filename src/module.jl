@@ -40,7 +40,11 @@ mutable struct Global
     type::ValType
     mutable::Bool
     init::Vector{Inst}
+    imported::Union{Nothing,Tuple{String,String}}
 end
+
+Global(idx::Int, name::String, type::ValType, mutable::Bool, init::Vector{Inst}) =
+    Global(idx, name, type, mutable, init, nothing)
 
 "An exception tag, with the function type of its payload."
 mutable struct Tag
@@ -49,13 +53,22 @@ mutable struct Tag
 end
 
 "The linear memory of a module (only one): its limits in 64 KiB pages."
-mutable struct Memory
+mutable struct WMemory
     min::Int
     max::Union{Nothing,Int}
     imported::Union{Nothing,Tuple{String,String}}
 end
 
-Memory(min::Integer, max::Union{Nothing,Integer}=nothing) = Memory(min, max, nothing)
+WMemory(min::Integer, max::Union{Nothing,Integer}=nothing) = WMemory(min, max, nothing)
+
+"A memory access immediate: log2 byte alignment and unsigned 32-bit byte offset."
+struct MemArg{A<:Integer,O<:Integer}
+    align::A
+    offset::O
+end
+
+simd_bytes(x::UInt128) = reinterpret(UInt8, [htol(x)])
+simd_bytes(x::AbstractVector) = [b % UInt8 for b in x]
 
 "A data segment: bytes and an optional active offset expression in memory 0."
 struct DataSegment
@@ -83,7 +96,7 @@ mutable struct WModule
     "The functions referenced by `ref.func`, which must be declared."
     declared::Vector{Func}
     declared_set::Set{Func}
-    memory::Union{Nothing,Memory}
+    memory::Union{Nothing,WMemory}
     relaxed_simd::Bool
 end
 
@@ -142,7 +155,19 @@ function add_global!(m::WModule, name::AbstractString, type::ValType, mutable::B
                      init::Vector{Inst})
     g = Global(-1, String(name), type, mutable, init)
     push!(m.globals, g)
-    g.idx = length(m.globals) - 1   # globals are never imported, so indices are final
+    g.idx = length(m.globals) - 1
+    return g
+end
+
+"Import a global `mod.name` with the given type and mutability."
+function add_import!(m::WModule, mod::AbstractString, name::AbstractString,
+                     type::ValType, mutable::Bool=false)
+    g = Global(-1, String(name), type, mutable, Inst[], (String(mod), String(name)))
+    i = count(g -> g.imported !== nothing, m.globals) + 1
+    insert!(m.globals, i, g)
+    for (i, item) in enumerate(m.globals)
+        item.idx = i - 1
+    end
     return g
 end
 
@@ -168,24 +193,26 @@ end
 
 "Give the module its linear memory, of `min` (and at most `max`) 64 KiB pages."
 function add_memory!(m::WModule, min::Integer, max::Union{Nothing,Integer}=nothing)
-    return add_memory!(m, Memory(min, max))
+    return add_memory!(m, WMemory(min, max))
 end
 
-function add_memory!(m::WModule, mem::Memory)
+function add_memory!(m::WModule, mem::WMemory)
     m.memory === nothing || throw(ArgumentError("the module already has a memory"))
     valid_limits(mem) || throw(ArgumentError("memory limits must satisfy 0 ≤ min ≤ max ≤ 65536"))
     return m.memory = mem
 end
 
-valid_limits(mem::Memory) = 0 <= mem.min <= 65536 &&
+valid_limits(mem::WMemory) = 0 <= mem.min <= 65536 &&
     (mem.max === nothing || mem.min <= mem.max <= 65536)
 
 "Import `mod.name` as the module's memory with the limits of `mem`."
-function add_import!(m::WModule, mod::AbstractString, name::AbstractString, mem::Memory)
-    return add_memory!(m, Memory(mem.min, mem.max, (String(mod), String(name))))
+function add_import!(m::WModule, mod::AbstractString, name::AbstractString, mem::WMemory)
+    add_memory!(m, mem)
+    mem.imported = (String(mod), String(name))
+    return mem
 end
 
-"Export `item` (a `Func`, `Global`, `Tag` or the `Memory`) as `name`."
+"Export `item` (a `Func`, `Global`, `Tag` or the `WMemory`) as `name`."
 add_export!(m::WModule, name::AbstractString, item) = push!(m.exports, (String(name), item))
 
 "Declare `f` as referenced by `ref.func`."

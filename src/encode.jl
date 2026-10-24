@@ -138,15 +138,15 @@ function write_imm(io::IO, kind::Symbol, @nospecialize(x))
     elseif kind === :valtypes
         write_vec(write_valtype, io, x)
     elseif kind === :memarg
-        leb_u(io, x[1]); leb_u(io, x[2])
+        write_memarg(io, x)
     elseif kind === :memidx
         leb_u(io, x)
     elseif kind === :lane
         write(io, UInt8(x))
     elseif kind === :v128
-        x isa UInt128 ? write(io, htol(x)) : write(io, UInt8.(collect(x)))
+        write(io, simd_bytes(x))
     elseif kind === :lanes16
-        write(io, UInt8.(collect(x)))
+        write(io, simd_bytes(x))
     elseif kind === :castflags
         write(io, UInt8(x))
     elseif kind === :catches
@@ -160,6 +160,11 @@ function write_imm(io::IO, kind::Symbol, @nospecialize(x))
     else
         error("unknown immediate kind $kind")
     end
+end
+
+function write_memarg(io::IO, x::MemArg)
+    leb_u(io, x.align)
+    leb_u(io, x.offset)
 end
 
 function write_inst(io::IO, inst::Inst)
@@ -190,7 +195,7 @@ function write_section(f, io::IO, id::Integer)
     write(io, bytes)
 end
 
-function write_limits(io::IO, mem::Memory)
+function write_limits(io::IO, mem::WMemory)
     write(io, mem.max === nothing ? 0x00 : 0x01)
     leb_u(io, mem.min)
     mem.max === nothing || leb_u(io, mem.max)
@@ -226,6 +231,8 @@ function to_bytes(m::WModule; verify::Bool=true)
     write(io, UInt8[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
     imports = filter(f -> f.imported !== nothing, m.funcs)
     defined = filter(f -> f.imported === nothing, m.funcs)
+    global_imports = filter(g -> g.imported !== nothing, m.globals)
+    global_defs = filter(g -> g.imported === nothing, m.globals)
     mem = m.memory
     imported_memory = mem !== nothing && mem.imported !== nothing
 
@@ -235,13 +242,20 @@ function to_bytes(m::WModule; verify::Bool=true)
         write(s, 0x4e)
         write_vec(write_subtype, s, m.types)
     end
-    isempty(imports) && !imported_memory || write_section(io, 2) do s
-        leb_u(s, length(imports) + imported_memory)
+    isempty(imports) && isempty(global_imports) && !imported_memory || write_section(io, 2) do s
+        leb_u(s, length(imports) + length(global_imports) + imported_memory)
         for f in imports
             write_name(s, f.imported[1])
             write_name(s, f.imported[2])
             write(s, 0x00)
             leb_u(s, f.type.idx)
+        end
+        for g in global_imports
+            write_name(s, g.imported[1])
+            write_name(s, g.imported[2])
+            write(s, 0x03)
+            write_valtype(s, g.type)
+            write(s, g.mutable ? 0x01 : 0x00)
         end
         if imported_memory
             write_name(s, mem.imported[1])
@@ -263,8 +277,8 @@ function to_bytes(m::WModule; verify::Bool=true)
             leb_u(s, t.type.idx)
         end
     end
-    isempty(m.globals) || write_section(io, 6) do s
-        write_vec(s, m.globals) do s, g
+    isempty(global_defs) || write_section(io, 6) do s
+        write_vec(s, global_defs) do s, g
             write_valtype(s, g.type)
             write(s, g.mutable ? 0x01 : 0x00)
             write_expr(s, g.init)
@@ -279,7 +293,7 @@ function to_bytes(m::WModule; verify::Bool=true)
                 write(s, 0x03); leb_u(s, item.idx)
             elseif item isa Tag
                 write(s, 0x04); leb_u(s, item.idx)
-            elseif item isa Memory
+            elseif item isa WMemory
                 write(s, 0x02); leb_u(s, 0)
             else
                 error("cannot export $item")
