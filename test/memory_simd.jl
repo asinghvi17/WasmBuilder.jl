@@ -490,3 +490,128 @@ end
         @test_throws WasmValidationError verify(m)
     end
 end
+
+lane_bytes(xs) = collect(reinterpret(UInt8, htol.(xs)))
+
+@testset "SIMD byte and lane execution" begin
+    m = WModule()
+    add_export!(m, "mem", add_memory!(m, 1))
+    source = UInt8.(240:255)
+    add_data!(m, source; offset=32)
+    script = IOBuffer()
+    println(script, "const assert = require('assert'); const mem = new Uint8Array(e.mem.buffer);")
+    cases = Ref(0)
+    function check_vector(body, name, expected)
+        build(m, name) do b
+            emit!(b, :i32_const, 0)
+            body(b)
+            emit!(b, :v128_store, MemArg(0, 0))
+        end
+        println(script, "e.$name(); assert.deepStrictEqual([...mem.slice(0,16)], ",
+                Int.(expected), ", '$name');")
+        cases[] += 1
+    end
+
+    bytes = UInt8.(0:15)
+    bits = UInt128(0x0f0e0d0c0b0a09080706050403020100)
+    for (name, value, expected) in (("const_bits", bits, bytes),
+                                   ("const_bytes", bytes, bytes),
+                                   ("const_signed", collect(-128:-113), UInt8.(128:143)))
+        check_vector(b -> emit!(b, :v128_const, value), name, expected)
+    end
+    mask = [31, 0, 16, 15, 1, 30, 17, 14, 2, 29, 18, 13, 3, 28, 19, 12]
+    check_vector("shuffle", vcat(bytes, source)[mask .+ 1]) do b
+        emit!(b, :v128_const, bytes); emit!(b, :v128_const, source)
+        emit!(b, :i8x16_shuffle, mask)
+    end
+    selectors = [15, 0, 16, 31, 128, 255, 1, 14, 2, 13, 3, 12, 4, 11, 5, 10]
+    check_vector("swizzle", [i < 16 ? source[i+1] : 0 for i in selectors]) do b
+        emit!(b, :v128_const, source); emit!(b, :v128_const, selectors)
+        emit!(b, :i8x16_swizzle)
+    end
+
+    for width in (1, 2, 4, 8), lane in (0, 16 ÷ width - 1)
+        bits = 8width
+        expected = copy(bytes)
+        expected[lane*width+1:(lane+1)*width] = source[4:3+width]
+        check_vector("load$(bits)_lane$lane", expected) do b
+            emit!(b, :i32_const, 33); emit!(b, :v128_const, bytes)
+            emit!(b, Symbol("v128_load$(bits)_lane"), MemArg(0, 2), lane)
+        end
+        name = "store$(bits)_lane$lane"
+        build(m, name) do b
+            emit!(b, :i32_const, 64); emit!(b, :v128_const, bytes)
+            emit!(b, Symbol("v128_store$(bits)_lane"), MemArg(0, 3), lane)
+        end
+        expected = fill(0xaa, 16)
+        expected[4:3+width] = bytes[lane*width+1:(lane+1)*width]
+        println(script, "mem.fill(170,64,80); e.$name(); assert.deepStrictEqual([...mem.slice(64,80)], ",
+                Int.(expected), ", '$name');")
+        cases[] += 1
+    end
+    for width in (4, 8)
+        check_vector("load$(8width)_zero", [source[4:3+width]; zeros(UInt8, 16-width)]) do b
+            emit!(b, :i32_const, 33)
+            emit!(b, Symbol("v128_load$(8width)_zero"), MemArg(0, 2))
+        end
+    end
+
+    for T in (Int8, Int16), signed in (true, false), lane in (0, 16 ÷ sizeof(T) - 1)
+        lanes = fill(T(-1), 16 ÷ sizeof(T))
+        lanes[1] = typemin(T)
+        suffix = signed ? "s" : "u"
+        op = Symbol("i$(8sizeof(T))x$(length(lanes))_extract_lane_$suffix")
+        name = "$(op)_$lane"
+        build(m, name, ValType[], ValType[I32]) do b
+            emit!(b, :v128_const, lane_bytes(lanes)); emit!(b, op, lane)
+        end
+        expected = signed ? Int(lanes[lane+1]) : Int(reinterpret(unsigned(T), lanes[lane+1]))
+        println(script, "assert.strictEqual(e.$name(), $expected, '$name');")
+        cases[] += 1
+    end
+
+    for (T, S) in ((Int8, Int16), (Int16, Int32)), signed in (true, false)
+        lo, hi = Int(typemin(T)), Int(typemax(T))
+        inputs = S[lo-1, lo, -1, 0, 1, hi, hi+1, 2hi+2]
+        sizeof(S) == 2 && append!(inputs, reverse(inputs))
+        n = length(inputs) ÷ 2
+        R = signed ? T : unsigned(T)
+        expected = R.(clamp.(inputs, Int(typemin(R)), Int(typemax(R))))
+        suffix = signed ? "s" : "u"
+        name = "i$(8sizeof(T))x$(16 ÷ sizeof(T))_narrow_i$(8sizeof(S))x$(16 ÷ sizeof(S))_$suffix"
+        check_vector(name, lane_bytes(expected)) do b
+            emit!(b, :v128_const, lane_bytes(inputs[1:n]))
+            emit!(b, :v128_const, lane_bytes(inputs[n+1:end]))
+            emit!(b, Symbol(name))
+        end
+    end
+
+    for (S, T) in ((Int8, Int16), (Int16, Int32), (Int32, Int64)), signed in (true, false), high in (false, true)
+        n = 16 ÷ sizeof(S)
+        a = S[isodd(i) ? typemin(S) + i : typemax(S) - i for i in 1:n]
+        bvals = S[isodd(i) ? -i : i for i in 1:n]
+        R = signed ? T : unsigned(T)
+        lhs = signed ? Int128.(a) : Int128.(reinterpret(unsigned(S), a))
+        rhs = signed ? Int128.(bvals) : Int128.(reinterpret(unsigned(S), bvals))
+        lanes = high ? (n÷2+1:n) : (1:n÷2)
+        expected = R.(lhs[lanes] .* rhs[lanes])
+        half, suffix = high ? "high" : "low", signed ? "s" : "u"
+        name = "i$(8sizeof(T))x$(16 ÷ sizeof(T))_extmul_$(half)_i$(8sizeof(S))x$(n)_$suffix"
+        check_vector(name, lane_bytes(expected)) do b
+            emit!(b, :v128_const, lane_bytes(a)); emit!(b, :v128_const, lane_bytes(bvals))
+            emit!(b, Symbol(name))
+        end
+    end
+    a = Int16[-32768, 32767, -2, 3, 100, -101, 255, -256]
+    bvals = Int16[2, -3, 4, 5, -6, 7, -8, -9]
+    products = Int32.(a) .* Int32.(bvals)
+    expected = [products[i] + products[i+1] for i in 1:2:8]
+    check_vector("dot", lane_bytes(expected)) do b
+        emit!(b, :v128_const, lane_bytes(a)); emit!(b, :v128_const, lane_bytes(bvals))
+        emit!(b, :i32x4_dot_i16x8_s)
+    end
+    println(script, "console.log('passed $(cases[]) SIMD execution cases');")
+    bytes = to_bytes(m)
+    @test checkvalid(bytes)
+    @test node_run(bytes, String(take!(script))) == "passed 48 SIMD execution cases"
+end

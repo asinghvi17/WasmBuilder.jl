@@ -128,5 +128,8 @@ validates them with `wasm-tools` when it is on the `PATH`, in `~/.cargo/bin`, or
 `WASM_TOOLS`.
 
 The tests validate every memory/SIMD opcode in Node and exercise a linear-memory
-`f64x2` kernel with GC arrays and structs. With `wasm-tools`, they also check binary/text
-round trips. Set `WASMBUILDER_NODE` to use a local Node executable instead of the JLL.
+`f64x2` kernel with GC arrays and structs. Execution tests compare byte order, lane
+loads/stores, zero-extending loads, signed extraction, narrowing, extended multiplication
+and dot products against Julia results. With `wasm-tools`, they also check instruction
+names and binary/text round trips; its absence logs which checks were skipped.
+Set `WASMBUILDER_NODE` to use a local Node executable instead of the JLL.
