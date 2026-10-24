@@ -4,7 +4,8 @@ WasmBuilder is to WebAssembly what LLVM.jl is to LLVM IR: a Julia library for bu
 modules, used by code generators (WasmCodegen.jl is the first). It covers the parts of
 WebAssembly that a GC-language compiler targets: the GC proposal (structs, arrays,
 subtyping, casts, i31), typed function references, multi-value, exception handling (the
-`exnref` version: `try_table`, `throw`, `throw_ref`), passive data segments.
+`exnref` version: `try_table`, `throw`, `throw_ref`), linear memory, active and passive
+data segments, fixed-width SIMD128 and opt-in relaxed SIMD.
 
 It does not depend on an external toolchain to produce modules. External tools are
 optional: `wasm-tools` for an independent validation (`validate`) and disassembly, and
@@ -14,10 +15,10 @@ Binaryen's `wasm-opt` for optimization (a code generator's choice).
 
 | Object | Role |
 |---|---|
-| `WModule` | the module under construction: types, functions, globals, tags, data, exports, start |
+| `WModule` | the module under construction: types, functions, globals, tags, memory, data, exports, start |
 | `SubType`, `FuncType`, `StructType`, `ArrayType`, `FieldType` | type definitions |
 | `NumType`, `RefType`, `PackedType`, `TypeRef` | value, reference, packed storage types; a defined type by index |
-| `Func`, `Global`, `Tag` | module items; function indices are assigned when written |
+| `Func`, `Global`, `Tag`, `Memory`, `DataSegment` | module items; function indices are assigned when written |
 | `Inst` | an instruction: name (text format with `_`) and immediates (items, not indices) |
 | `Builder` | appends validated instructions to a function body |
 
@@ -62,19 +63,49 @@ the wrong instruction, with its own backtrace, instead of a byte offset from an 
 Validation can be switched off (`WasmBuilder.VALIDATE[] = false`) for speed once a
 generator is trusted; the operand stack is still tracked.
 
-One table (`instructions.jl`) gives each instruction its opcode, immediate kinds, text
-name and, when its type is fixed, its signature: it drives the encoding, the printer and
-the validation of those instructions. Numeric signatures come from the names
+One table (`INSTRUCTIONS`, populated by `instructions.jl` and `memory_simd.jl`) gives
+each instruction its opcode, immediate kinds, text name and, when its type is fixed,
+its signature: it drives encoding, printing and validation. Numeric signatures come from the names
 (`i64_trunc_sat_f64_s`: `f64 → i64`); the other instructions have explicit rules.
 
 What the builder cannot check instruction by instruction is checked by `verify(m)`: type
 definitions (supertypes defined earlier, not final, and matching), global initializers
 (constant expressions of the global's type, reading earlier immutable globals), tags,
-unique export names and the type of the start function. `to_bytes` calls it.
+unique export names and the type of the start function. It also validates memory limits,
+active data offsets, memory availability, and memory/SIMD immediates and feature flags
+in function bodies, including bodies assembled directly from `Inst`s. Operand/control
+stack validation remains the builder's responsibility. `to_bytes` calls `verify`.
 
-Not covered yet: tables and `call_indirect`, linear memory, SIMD, element segments beyond
-the declarative one that `ref.func` needs (`declare!` adds functions to it), imported
-globals.
+Not covered yet: tables and `call_indirect`, multi-memory, memory64, shared memory and
+atomics, element segments beyond the declarative one that `ref.func` needs (`declare!` adds functions to it),
+imported globals.
+
+### Linear memory and vector instructions
+
+`m.memory` is either absent or one `Memory`, defined or imported, with limits in 64 KiB
+pages (`0 ≤ min ≤ max ≤ 65536`). The memory index is always zero; addresses and lengths
+are `i32`. A second memory is rejected. Memory imports share the import section with
+function imports; only defined memory appears in the memory section.
+
+`add_data!(m, bytes)` adds a passive `DataSegment`. Its `offset` keyword makes the
+segment active in memory zero, taking an integer or an `i32` constant expression.
+Segment indices remain stable across active and passive segments. The data-count
+section precedes code, and the data section follows it. Both GC array data instructions
+and bulk memory instructions refer to these indices.
+
+Memory instructions take `(alignment_exponent, byte_offset)` memargs. `OpInfo` holds
+the maximum alignment exponent and lane count for each applicable instruction, so
+validation uses the access width, including splat, extending and lane loads. Shuffle
+masks contain 16 selectors below 32. Vector constants contain exactly 128 bits and are
+encoded in little-endian byte order. The `0xfd` opcode suffix uses unsigned LEB128,
+including opcodes above `0x7f` and relaxed opcodes `0x100:0x113`.
+
+`WModule(relaxed_simd=true)` enables all 20 relaxed instructions; the default is false.
+The flag belongs to the module so code generators can target engines independently.
+The fixed SIMD table and signatures follow the
+[SIMD binary specification](https://github.com/WebAssembly/simd/blob/main/proposals/simd/BinarySIMD.md);
+relaxed operations follow the
+[relaxed SIMD proposal](https://github.com/WebAssembly/relaxed-simd/blob/main/proposals/relaxed-simd/Overview.md).
 
 ## Output
 
