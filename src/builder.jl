@@ -523,6 +523,9 @@ function check_field_read(b, op, f::FieldType)
     end
 end
 
+byte_sequence(x, limit) = x isa Union{Tuple,AbstractVector} && length(x) == 16 &&
+    all(l -> l isa Integer && 0 <= l < limit, x)
+
 function imm_ok(m::WModule, kind::Symbol, @nospecialize(x))
     kind === :u32 && return x isa Integer && 0 <= x <= typemax(UInt32)
     kind === :i32 && return x isa Integer && typemin(Int32) <= x <= typemax(UInt32)
@@ -533,14 +536,32 @@ function imm_ok(m::WModule, kind::Symbol, @nospecialize(x))
     kind === :func && return x isa Func
     kind === :global && return x isa Global
     kind === :valtypes && return x isa AbstractVector && all(t -> valid_valtype(m, t), x)
+    kind === :memarg && return x isa Tuple{Integer,Integer} && 0 <= x[1] <= 4 &&
+                               0 <= x[2] <= typemax(UInt32)
+    kind === :memidx && return x isa Integer && x == 0
+    kind === :lane && return x isa Integer && 0 <= x < 16
+    kind === :v128 && return x isa UInt128 || byte_sequence(x, 256)
+    kind === :lanes16 && return byte_sequence(x, 32)
+    kind === :dataidx && return x isa Integer && 0 <= x < length(m.datas)
     return true
 end
 
-function check_imms(b::Builder, op::Symbol, info::OpInfo, imms)
+check_imms(b::Builder, op::Symbol, info::OpInfo, imms) =
+    check_imms(msg -> verr(b, op, msg), b.mod, info, imms)
+
+function check_imms(fail, m::WModule, info::OpInfo, imms)
     length(imms) == length(info.imms) ||
-        verr(b, op, "$(length(info.imms)) immediates expected, got $(length(imms))")
+        fail("$(length(info.imms)) immediates expected, got $(length(imms))")
+    info.relaxed && !m.relaxed_simd && fail("relaxed SIMD is disabled")
+    if :memarg in info.imms || :memidx in info.imms
+        m.memory === nothing && fail("module has no memory")
+    end
     for (k, x) in zip(info.imms, imms)
-        imm_ok(b.mod, k, x) || verr(b, op, "invalid immediate of kind $k: $(typeof(x)) $(x isa Union{Number,Symbol,TypeRef} ? x : "")")
+        imm_ok(m, k, x) || fail("invalid immediate of kind $k: $(typeof(x)) $(x isa Union{Number,Symbol,TypeRef} ? x : "")")
+        k === :memarg && x[1] > info.alignment &&
+            fail("alignment exponent $(x[1]) exceeds $(info.alignment)")
+        k === :lane && x >= info.lanes &&
+            fail("lane $x must be less than $(info.lanes)")
     end
 end
 

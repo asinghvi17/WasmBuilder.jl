@@ -111,7 +111,7 @@ function write_blocktype(io::IO, bt)
 end
 
 function write_imm(io::IO, kind::Symbol, @nospecialize(x))
-    if kind === :u32
+    if kind === :u32 || kind === :dataidx
         leb_u(io, x)
     elseif kind === :i32
         leb_s(io, const_bits(Int32, x))
@@ -137,6 +137,16 @@ function write_imm(io::IO, kind::Symbol, @nospecialize(x))
         write_vec(leb_u, io, x)
     elseif kind === :valtypes
         write_vec(write_valtype, io, x)
+    elseif kind === :memarg
+        leb_u(io, x[1]); leb_u(io, x[2])
+    elseif kind === :memidx
+        leb_u(io, x)
+    elseif kind === :lane
+        write(io, UInt8(x))
+    elseif kind === :v128
+        x isa UInt128 ? write(io, htol(x)) : write(io, UInt8.(collect(x)))
+    elseif kind === :lanes16
+        write(io, UInt8.(collect(x)))
     elseif kind === :castflags
         write(io, UInt8(x))
     elseif kind === :catches
@@ -180,6 +190,12 @@ function write_section(f, io::IO, id::Integer)
     write(io, bytes)
 end
 
+function write_limits(io::IO, mem::Memory)
+    write(io, mem.max === nothing ? 0x00 : 0x01)
+    leb_u(io, mem.min)
+    mem.max === nothing || leb_u(io, mem.max)
+end
+
 function write_locals(io::IO, locals::Vector{ValType})
     # runs of equal types
     runs = Tuple{Int,ValType}[]
@@ -210,6 +226,8 @@ function to_bytes(m::WModule; verify::Bool=true)
     write(io, UInt8[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00])
     imports = filter(f -> f.imported !== nothing, m.funcs)
     defined = filter(f -> f.imported === nothing, m.funcs)
+    mem = m.memory
+    imported_memory = mem !== nothing && mem.imported !== nothing
 
     # types: one recursion group
     write_section(io, 1) do s
@@ -217,16 +235,27 @@ function to_bytes(m::WModule; verify::Bool=true)
         write(s, 0x4e)
         write_vec(write_subtype, s, m.types)
     end
-    isempty(imports) || write_section(io, 2) do s
-        write_vec(s, imports) do s, f
+    isempty(imports) && !imported_memory || write_section(io, 2) do s
+        leb_u(s, length(imports) + imported_memory)
+        for f in imports
             write_name(s, f.imported[1])
             write_name(s, f.imported[2])
             write(s, 0x00)
             leb_u(s, f.type.idx)
         end
+        if imported_memory
+            write_name(s, mem.imported[1])
+            write_name(s, mem.imported[2])
+            write(s, 0x02)
+            write_limits(s, mem)
+        end
     end
     write_section(io, 3) do s
         write_vec((s, f) -> leb_u(s, f.type.idx), s, defined)
+    end
+    mem === nothing || imported_memory || write_section(io, 5) do s
+        leb_u(s, 1)
+        write_limits(s, mem)
     end
     isempty(m.tags) || write_section(io, 13) do s
         write_vec(s, m.tags) do s, t
@@ -250,6 +279,8 @@ function to_bytes(m::WModule; verify::Bool=true)
                 write(s, 0x03); leb_u(s, item.idx)
             elseif item isa Tag
                 write(s, 0x04); leb_u(s, item.idx)
+            elseif item isa Memory
+                write(s, 0x02); leb_u(s, 0)
             else
                 error("cannot export $item")
             end
@@ -280,9 +311,14 @@ function to_bytes(m::WModule; verify::Bool=true)
     end
     isempty(m.datas) || write_section(io, 11) do s
         write_vec(s, m.datas) do s, d
-            leb_u(s, 1)    # passive
-            leb_u(s, length(d))
-            write(s, d)
+            if d.offset === nothing
+                leb_u(s, 1)
+            else
+                leb_u(s, 0)
+                write_expr(s, d.offset)
+            end
+            leb_u(s, length(d.bytes))
+            write(s, d.bytes)
         end
     end
     # names, for debugging (function names)

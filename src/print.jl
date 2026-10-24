@@ -65,6 +65,14 @@ function show_imm(io::IO, kind::Symbol, @nospecialize(x))
             name = ("catch", "catch_ref", "catch_all", "catch_all_ref")[k+1]
             k < 2 ? "($name \$tag$(tag.idx) $label)" : "($name $label)"
         end, " ")
+    elseif kind === :memarg
+        x[2] == 0 || print(io, "offset=", x[2], " ")
+        print(io, "align=", 1 << x[1])
+    elseif kind === :v128
+        bytes = x isa UInt128 ? reinterpret(UInt8, [htol(x)]) : collect(x)
+        print(io, "i8x16 ", join(Int.(bytes), " "))
+    elseif kind === :lanes16
+        join(io, x, " ")
     elseif x isa Func || x isa Global
         print(io, "\$", x.name)
     elseif x isa Tag
@@ -150,7 +158,28 @@ function print_wat(io::IO, m::WModule)
         show_insts(io, f.body, 2)
         println(io, "  )")
     end
+    mem = m.memory
+    if mem !== nothing
+        print(io, "  (memory ")
+        mem.imported === nothing || print(io, "(import ", wat_string(mem.imported[1]),
+                                           " ", wat_string(mem.imported[2]), ") ")
+        println(io, mem.min, mem.max === nothing ? "" : " $(mem.max)", ")")
+    end
+    for d in m.datas
+        print(io, "  (data ")
+        if d.offset !== nothing
+            print(io, "(offset")
+            for inst in d.offset
+                print(io, " (")
+                show_inst(io, inst)
+                print(io, ")")
+            end
+            print(io, ") ")
+        end
+        println(io, wat_string(d.bytes), ")")
+    end
     for (name, item) in m.exports
+        item isa Memory && (println(io, "  (export \"", name, "\" (memory 0))"); continue)
         println(io, "  (export \"", name, "\" ", item isa Func ? "(func \$" : item isa Global ? "(global \$" : "(tag ",
                 item isa Tag ? item.idx : item.name, "))")
     end
@@ -159,3 +188,7 @@ function print_wat(io::IO, m::WModule)
 end
 
 Base.show(io::IO, ::MIME"text/plain", m::WModule) = print_wat(io, m)
+
+wat_string(s::AbstractString) = wat_string(codeunits(s))
+wat_string(bytes::AbstractVector{UInt8}) =
+    "\"" * join("\\" * string(b; base=16, pad=2) for b in bytes) * "\""

@@ -10,13 +10,13 @@ const HAS_WASM_TOOLS = W.wasm_tools() !== nothing
 HAS_WASM_TOOLS || @info "wasm-tools not found: modules are validated by WasmBuilder only"
 checkvalid(bytes) = HAS_WASM_TOOLS ? validate(bytes) : true
 
-function node_run(bytes, js)
+function node_run(bytes, js; imports="{}")
     dir = mktempdir()
     write(joinpath(dir, "m.wasm"), bytes)
     script = """
     const fs = require('fs');
     const bytes = fs.readFileSync('$(joinpath(dir, "m.wasm"))');
-    WebAssembly.instantiate(bytes, {}).then(({instance}) => { const e = instance.exports; $js });
+    WebAssembly.instantiate(bytes, $imports).then(({instance}) => { const e = instance.exports; $js });
     """
     write(joinpath(dir, "run.js"), script)
     # exnref (`try_table`) is behind a flag in Node 24
@@ -549,3 +549,5 @@ end
     end
 end
 
+
+include("memory_simd.jl")

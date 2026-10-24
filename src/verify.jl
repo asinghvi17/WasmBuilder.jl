@@ -5,7 +5,7 @@ merr(item::AbstractString, op::Symbol, msg) =
     throw(WasmValidationError(item, 0, op, msg, Any[]))
 
 # the instructions allowed in constant expressions (with extended-const arithmetic)
-const CONST_OPS = Set([:i32_const, :i64_const, :f32_const, :f64_const, :ref_null,
+const CONST_OPS = Set([:i32_const, :i64_const, :f32_const, :f64_const, :v128_const, :ref_null,
                        :ref_func, :ref_i31, :struct_new, :struct_new_default, :array_new,
                        :array_new_default, :array_new_fixed, :any_convert_extern,
                        :extern_convert_any, :global_get, :i32_add, :i32_sub, :i32_mul,
@@ -17,8 +17,10 @@ const CONST_OPS = Set([:i32_const, :i64_const, :f32_const, :f64_const, :ref_null
 Check the validity of the module beyond its function bodies (validated by the
 [`Builder`](@ref) as they are emitted): type definitions and their declared supertypes,
 global initializers (constant expressions of the global's type, reading only earlier
-immutable globals), tags, exports (unique names) and the start function (of type
-`[] -> []`). Throws a [`WasmValidationError`](@ref); [`to_bytes`](@ref) calls it.
+immutable globals), memory limits, active data offsets, tags, exports (unique names)
+and the start function (of type `[] -> []`). Recheck memory/SIMD immediates, memory
+availability and relaxed SIMD enablement in function bodies. Throws a
+[`WasmValidationError`](@ref); [`to_bytes`](@ref) calls it.
 """
 function verify(m::WModule)
     for (i, t) in enumerate(m.types)
@@ -44,14 +46,33 @@ function verify(m::WModule)
         valid_valtype(m, g.type) || merr(item, :global, "invalid type $(g.type)")
         verify_const(m, item, g.init, g.type, i - 1)
     end
+    mem = m.memory
+    mem === nothing || valid_limits(mem) || merr("memory", :memory, "invalid memory limits")
+    for (i, d) in enumerate(m.datas)
+        d.offset === nothing && continue
+        mem === nothing && merr("data $(i-1)", :data, "active segment requires a memory")
+        verify_const(m, "data $(i-1)", d.offset, I32, 0)
+    end
+    for f in m.funcs
+        f.imported === nothing || continue
+        for (pos, inst) in enumerate(f.body)
+            info = get(INSTRUCTIONS, inst.op, nothing)
+            if info !== nothing && (info.code[1] == 0xfd ||
+                    any(k -> k in (:memarg, :memidx, :dataidx), info.imms))
+                check_imms(m, info, inst.imm) do msg
+                    throw(WasmValidationError(f.name, pos, inst.op, msg, Any[]))
+                end
+            end
+        end
+    end
     names = Set{String}()
     for (name, item) in m.exports
         where = "export \"$name\""
         name in names && merr(where, :export, "duplicate export name")
         push!(names, name)
         item isa Func && item in funcs || item isa Global && item in globals ||
-            item isa Tag && item in tags ||
-            merr(where, :export, "not a function, global or tag of the module")
+            item isa Tag && item in tags || item isa Memory && item === m.memory ||
+            merr(where, :export, "not a function, global, tag or memory of the module")
     end
     s = m.start
     if s !== nothing

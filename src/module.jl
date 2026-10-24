@@ -48,12 +48,28 @@ mutable struct Tag
     type::TypeRef
 end
 
+"The linear memory of a module (only one): its limits in 64 KiB pages."
+mutable struct Memory
+    min::Int
+    max::Union{Nothing,Int}
+    imported::Union{Nothing,Tuple{String,String}}
+end
+
+Memory(min::Integer, max::Union{Nothing,Integer}=nothing) = Memory(min, max, nothing)
+
+"A data segment: bytes and an optional active offset expression in memory 0."
+struct DataSegment
+    bytes::Vector{UInt8}
+    offset::Union{Nothing,Vector{Inst}}
+end
+
 """
-    WModule()
+    WModule(; relaxed_simd=false)
 
 A WebAssembly module under construction. All its types are defined in one recursion
 group, so that types with the same structure are distinct (nominal), which the code
-generator relies on to test for the Julia type of a value.
+generator relies on to test for the Julia type of a value. Set `relaxed_simd=true` to
+enable relaxed SIMD instructions.
 """
 mutable struct WModule
     types::Vector{SubType}
@@ -61,17 +77,20 @@ mutable struct WModule
     funcs::Vector{Func}
     globals::Vector{Global}
     tags::Vector{Tag}
-    datas::Vector{Vector{UInt8}}
+    datas::Vector{DataSegment}
     exports::Vector{Tuple{String,Any}}
     start::Union{Nothing,Func}
     "The functions referenced by `ref.func`, which must be declared."
     declared::Vector{Func}
     declared_set::Set{Func}
+    memory::Union{Nothing,Memory}
+    relaxed_simd::Bool
 end
 
-WModule() = WModule(SubType[], Dict{Tuple{Vector{ValType},Vector{ValType}},TypeRef}(),
-                    Func[], Global[], Tag[], Vector{UInt8}[], Tuple{String,Any}[], nothing,
-                    Func[], Set{Func}())
+WModule(; relaxed_simd::Bool=false) =
+    WModule(SubType[], Dict{Tuple{Vector{ValType},Vector{ValType}},TypeRef}(),
+            Func[], Global[], Tag[], DataSegment[], Tuple{String,Any}[], nothing,
+            Func[], Set{Func}(), nothing, relaxed_simd)
 
 "Add the type definition `t`, returning a reference to it."
 function add_type!(m::WModule, t::SubType)
@@ -134,13 +153,39 @@ function add_tag!(m::WModule, params::Vector{ValType})
     return t
 end
 
-"Add a passive data segment, returning its index."
-function add_data!(m::WModule, bytes::Vector{UInt8})
-    push!(m.datas, bytes)
+"""
+    add_data!(m, bytes; offset=nothing)
+
+Add a data segment, returning its index. With `offset=nothing` it is passive; an
+integer byte offset or an `Inst` vector makes it active in memory 0.
+"""
+function add_data!(m::WModule, bytes::Vector{UInt8}; offset=nothing)
+    init = offset isa Integer ? Inst[Inst(:i32_const, offset)] : offset
+    init isa Union{Nothing,Vector{Inst}} || throw(ArgumentError("invalid data offset"))
+    push!(m.datas, DataSegment(copy(bytes), init))
     return length(m.datas) - 1
 end
 
-"Export `item` (a `Func`, `Global` or `Tag`) as `name`."
+"Give the module its linear memory, of `min` (and at most `max`) 64 KiB pages."
+function add_memory!(m::WModule, min::Integer, max::Union{Nothing,Integer}=nothing)
+    return add_memory!(m, Memory(min, max))
+end
+
+function add_memory!(m::WModule, mem::Memory)
+    m.memory === nothing || throw(ArgumentError("the module already has a memory"))
+    valid_limits(mem) || throw(ArgumentError("memory limits must satisfy 0 ≤ min ≤ max ≤ 65536"))
+    return m.memory = mem
+end
+
+valid_limits(mem::Memory) = 0 <= mem.min <= 65536 &&
+    (mem.max === nothing || mem.min <= mem.max <= 65536)
+
+"Import `mod.name` as the module's memory with the limits of `mem`."
+function add_import!(m::WModule, mod::AbstractString, name::AbstractString, mem::Memory)
+    return add_memory!(m, Memory(mem.min, mem.max, (String(mod), String(name))))
+end
+
+"Export `item` (a `Func`, `Global`, `Tag` or the `Memory`) as `name`."
 add_export!(m::WModule, name::AbstractString, item) = push!(m.exports, (String(name), item))
 
 "Declare `f` as referenced by `ref.func`."

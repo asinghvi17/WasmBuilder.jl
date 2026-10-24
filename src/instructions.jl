@@ -8,6 +8,9 @@ struct OpInfo
     imms::Tuple
     text::String
     sig::Union{Nothing,Tuple{Vector{ValType},Vector{ValType}}}
+    alignment::Union{Nothing,Int}
+    lanes::Union{Nothing,Int}
+    relaxed::Bool
 end
 
 const INSTRUCTIONS = Dict{Symbol,OpInfo}()
@@ -15,7 +18,8 @@ const INSTRUCTIONS = Dict{Symbol,OpInfo}()
 # the first components of the names written with a `.` in the text format
 const TEXT_NAMESPACES = Set(["i32", "i64", "f32", "f64", "v128", "local", "global", "ref",
                              "struct", "array", "i31", "any", "extern", "table", "memory",
-                             "elem", "data"])
+                             "elem", "data", "i8x16", "i16x8", "i32x4", "i64x2", "f32x4",
+                             "f64x2"])
 
 "The name of the instruction `op` in the text format (`i32_add` is `i32.add`)."
 function text_name(op::Symbol)
@@ -52,11 +56,22 @@ function numeric_sig(op::Symbol)
     return nothing
 end
 
-function definst!(op::Symbol, code, imms::Tuple=(); sig=numeric_sig(op), text=text_name(op))
-    INSTRUCTIONS[op] = OpInfo(UInt8[code...], imms, text, sig)
+function definst!(op::Symbol, code, imms::Tuple=(); sig=numeric_sig(op), text=text_name(op),
+                  alignment=nothing, lanes=nothing, relaxed=false)
+    INSTRUCTIONS[op] = OpInfo(UInt8[code...], imms, text, sig, alignment, lanes, relaxed)
 end
 
 fixedsig(params, results) = (ValType[params...], ValType[results...])
+
+# the bytes of a prefixed opcode whose index is a LEB128 u32 (all of 0xfd's are)
+function leb_code(prefix::UInt8, n::Integer)
+    bytes = UInt8[prefix]
+    while true
+        b = UInt8(n & 0x7f); n >>= 7
+        n == 0 && (push!(bytes, b); return bytes)
+        push!(bytes, b | 0x80)
+    end
+end
 
 let
     # control (validated by their own functions in the builder)
@@ -148,4 +163,7 @@ let
     definst!(:ref_i31, (0xfb, 0x1c); sig=fixedsig((I32,), (RefType(:i31, false),)))
     definst!(:i31_get_s, (0xfb, 0x1d); sig=fixedsig((RefType(:i31),), (I32,)))
     definst!(:i31_get_u, (0xfb, 0x1e); sig=fixedsig((RefType(:i31),), (I32,)))
+
 end
+
+include("memory_simd.jl")
